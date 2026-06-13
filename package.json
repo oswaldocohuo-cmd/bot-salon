@@ -1,0 +1,16 @@
+
+{
+  "name": "manuel-salon-bot",
+  "version": "1.0.0",
+  "description": "Bot de WhatsApp para Manuel Salón usando Claude y Cal.com",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "axios": "^1.7.2",
+    "@anthropic-ai/sdk": "^0.22.0",
+    "google-spreadsheet": "^4.1.1"
+  }
+}
