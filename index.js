@@ -41,7 +41,8 @@ app.get('/webhook', (req, res) => {
   const challenge = req.query['hub.challenge'];
 
   if (mode && token) {
-    if (mode === 'subscribe' && token === process.env.WEBHOOK_VERIFY_TOKEN) {
+    // CORRECCIÓN: Quitamos process.env.WEBHOOK_VERIFY_TOKEN y dejamos tu clave fija fija de Meta
+    if (mode === 'subscribe' && token === 'salonbot123') {
       return res.status(200).send(challenge);
     }
     return res.sendStatus(403);
@@ -78,6 +79,11 @@ app.post('/webhook', async (req, res) => {
 
 async function registrarEnSheets(phone, name) {
   try {
+    // Si no tienes configurado Google Sheets todavía, esto evitará que el bot se rompa por completo
+    if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON || !process.env.GOOGLE_SHEETS_ID) {
+      console.log("Configuración de Google Sheets ausente. Saltando registro.");
+      return;
+    }
     const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
     const doc = new GoogleSpreadsheet(process.env.GOOGLE_SHEETS_ID, {
       auth: {
@@ -100,19 +106,29 @@ async function registrarEnSheets(phone, name) {
 }
 
 async function consultarAClaude(mensajeCliente, telefono, nombre) {
-  const msg = await anthropic.messages.create({
-    model: "claude-3-5-sonnet-20241022",
-    max_tokens: 300,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: `El cliente llamado ${nombre} con teléfono ${telefono} dice: "${mensajeCliente}"` }],
-  });
-  return msg.content[0].text;
+  try {
+    // Si no hay API Key de Claude, responde un texto por defecto para no romper el flujo
+    if (!process.env.CLAUDE_API_KEY) {
+      return `¡Hola ${nombre}! Bienvenido a Manuel Salón. En este momento estamos afinando los últimos detalles de nuestro sistema, pero pronto te atenderemos personalmente.`;
+    }
+    const msg = await anthropic.messages.create({
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 300,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: `El cliente llamado ${nombre} con teléfono ${telefono} dice: "${mensajeCliente}"` }],
+    });
+    return msg.content[0].text;
+  } catch (error) {
+    console.error("Error llamando a Claude:", error);
+    return `¡Hola ${nombre}! Gracias por escribir a Manuel Salón. Recibimos tu mensaje, un asesor se comunicará contigo en breve.`;
+  }
 }
 
 async function enviarWhatsApp(to, text) {
   try {
+    // CORRECCIÓN: Ajustamos los nombres para usar exactamente las variables que tienes en Railway
     await axios.post(
-      `https://graph.facebook.com/v18.0/${process.env.META_PHONE_ID}/messages`,
+      `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
         messaging_product: "whatsapp",
         recipient_type: "individual",
@@ -121,9 +137,10 @@ async function enviarWhatsApp(to, text) {
         text: { body: text }
       },
       {
-        headers: { Authorization: `Bearer ${process.env.META_WA_TOKEN}` }
+        headers: { Authorization: `Bearer ${process.env.META_TOKEN}` }
       }
     );
+    console.log("Mensaje enviado con éxito vía WhatsApp");
   } catch (error) {
     console.error("Error enviando WhatsApp:", error.response?.data || error.message);
   }
