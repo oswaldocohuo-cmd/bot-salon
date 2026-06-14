@@ -1,17 +1,17 @@
 const express = require('express');
 const axios = require('axios');
 const Anthropic = require('@anthropic-ai/sdk');
-const { GoogleSpreadsheet } = require('google-spreadsheet');
+const { GoogleSpreadsheet } = require('google-spreadsheet'); // Corregido internamente el uso abajo
 
 const app = express();
 app.use(express.json());
 
 // Inicializar Claude con tu API Key de Railway
 const anthropic = new Anthropic({
-  apiKey: process.env.CLAUDE_API_KEY,
+  apiKey: process.env.CLAUDE_API_KEY || 'no_key',
 });
 
-// REGLAS DEL NEGOCIO REALES DE MANUEL SALÓN (CORREGIDO)
+// REGLAS DEL NEGOCIO REALES DE MANUEL SALÓN
 const SYSTEM_PROMPT = `Eres Manuel, el asistente virtual inteligente de la peluquería "Manuel Salón". Tu objetivo es agendar, cambiar o cancelar citas de forma amable y eficiente a través de WhatsApp.
 
 Menu oficial de servicios y precios:
@@ -41,12 +41,12 @@ app.get('/webhook', (req, res) => {
   const challenge = req.query['hub.challenge'];
 
   if (mode && token) {
-    // CORRECCIÓN: Quitamos process.env.WEBHOOK_VERIFY_TOKEN y dejamos tu clave fija fija de Meta
     if (mode === 'subscribe' && token === 'salonbot123') {
       return res.status(200).send(challenge);
     }
     return res.sendStatus(403);
   }
+  return res.sendStatus(400);
 });
 
 app.post('/webhook', async (req, res) => {
@@ -60,40 +60,42 @@ app.post('/webhook', async (req, res) => {
       const customerName = body.entry[0].changes[0].value.contacts?.[0]?.profile?.name || "Cliente";
 
       if (customerMessage) {
-        // Graba el número automáticamente en tu Google Sheets
-        await registrarEnSheets(customerPhone, customerName);
+        // Envolvemos tareas secundarias para que un fallo no tire el webhook principal
+        try {
+          await registrarEnSheets(customerPhone, customerName);
+        } catch (e) {
+          console.error("Error ignorado en Sheets:", e.message);
+        }
         
-        // Claude procesa el mensaje con tus precios reales
         const responseText = await consultarAClaude(customerMessage, customerPhone, customerName);
-        
-        // Manda la respuesta a WhatsApp
         await enviarWhatsApp(customerPhone, responseText);
       }
     }
     res.sendStatus(200);
   } catch (error) {
     console.error("Error procesando mensaje:", error);
-    res.sendStatus(500);
+    res.sendStatus(200); // Siempre respondemos 200 a Meta para evitar bloqueos
   }
 });
 
 async function registrarEnSheets(phone, name) {
   try {
-    // Si no tienes configurado Google Sheets todavía, esto evitará que el bot se rompa por completo
     if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON || !process.env.GOOGLE_SHEETS_ID) {
       console.log("Configuración de Google Sheets ausente. Saltando registro.");
       return;
     }
     const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+    
+    // Adaptación segura para las nuevas versiones de google-spreadsheet
     const doc = new GoogleSpreadsheet(process.env.GOOGLE_SHEETS_ID, {
       auth: {
         clientEmail: creds.client_email,
-        privateKey: creds.private_key.replace(/\\n/g, '\n'),
+        privateKey: creds.private_key ? creds.private_key.replace(/\\n/g, '\n') : "",
       }
     });
+    
     await doc.loadInfo();
     const sheet = doc.sheetsByIndex[0];
-    
     const rows = await sheet.getRows();
     const existe = rows.find(row => row.get('Telefono') === phone);
     
@@ -101,15 +103,14 @@ async function registrarEnSheets(phone, name) {
       await sheet.addRow({ Nombre: name, Telefono: phone, FechaRegistro: new Date().toISOString() });
     }
   } catch (err) {
-    console.error("Error al registrar en Google Sheets:", err);
+    console.error("Error al registrar en Google Sheets:", err.message);
   }
 }
 
 async function consultarAClaude(mensajeCliente, telefono, nombre) {
   try {
-    // Si no hay API Key de Claude, responde un texto por defecto para no romper el flujo
-    if (!process.env.CLAUDE_API_KEY) {
-      return `¡Hola ${nombre}! Bienvenido a Manuel Salón. En este momento estamos afinando los últimos detalles de nuestro sistema, pero pronto te atenderemos personalmente.`;
+    if (!process.env.CLAUDE_API_KEY || process.env.CLAUDE_API_KEY === 'no_key') {
+      return `¡Hola ${nombre}! Bienvenido a Manuel Salón. Gracias por escribirnos, en un momento un asesor te atenderá.`;
     }
     const msg = await anthropic.messages.create({
       model: "claude-3-5-sonnet-20241022",
@@ -119,14 +120,17 @@ async function consultarAClaude(mensajeCliente, telefono, nombre) {
     });
     return msg.content[0].text;
   } catch (error) {
-    console.error("Error llamando a Claude:", error);
+    console.error("Error llamando a Claude:", error.message);
     return `¡Hola ${nombre}! Gracias por escribir a Manuel Salón. Recibimos tu mensaje, un asesor se comunicará contigo en breve.`;
   }
 }
 
 async function enviarWhatsApp(to, text) {
   try {
-    // CORRECCIÓN: Ajustamos los nombres para usar exactamente las variables que tienes en Railway
+    if (!process.env.PHONE_NUMBER_ID || !process.env.META_TOKEN) {
+      console.error("Faltan variables de WhatsApp (PHONE_NUMBER_ID o META_TOKEN)");
+      return;
+    }
     await axios.post(
       `https://graph.facebook.com/v18.0/${process.env.PHONE_NUMBER_ID}/messages`,
       {
@@ -145,6 +149,11 @@ async function enviarWhatsApp(to, text) {
     console.error("Error enviando WhatsApp:", error.response?.data || error.message);
   }
 }
+
+// SALVAVIDAS: Evita que cualquier error inesperado tumbe el proceso en Railway
+process.on('uncaughtException', (err) => {
+  console.error('Capturado error inesperado para evitar caída:', err.message);
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Bot de Manuel Salón corriendo en puerto ${PORT}`));
